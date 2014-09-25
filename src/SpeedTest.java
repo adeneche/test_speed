@@ -1,4 +1,5 @@
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -9,6 +10,7 @@ import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.Arrays;
 
 import org.antlr.v4.runtime.ANTLRFileStream;
 import org.antlr.v4.runtime.CommonTokenStream;
@@ -20,6 +22,7 @@ import org.antlr.v4.runtime.Token;
  * 
  */
 public class SpeedTest {
+	public static final char SEPARATOR_CHAR = '\t';
 
 	private static void usage() {
 		System.err.println("usage: SpeedTest path N bufSize [more bufSize]");
@@ -43,33 +46,48 @@ public class SpeedTest {
 
 		System.out.println("Counting lines...");
 		final int numLines = countNumLines(path);
-		System.out.printf("File contains %d lines \n", numLines);
+		System.out.printf("File has a size of %dB and contains %d lines \n", new File(path).length(), numLines);
 		
 		final AbstractStrategy[] strategies = {
 				new BufferLoad(N),
-				new CharChannel(N, false, numLines),
+//				new CharChannel(N, false, numLines),
 //				new CharChannel(N, true, numLines),
-				new AntlrLoad(N, false),
+//				new AntlrLoad(N, false),
 //				new AntlrLoad(N, true),
-				new ByteBufferLoad(N, false, numLines),
-				new ByteBufferLoad(N, true, numLines),
-				new ByteParser(N, numLines)
+//				new SimpleBytes(N),
+				new SimpleByteLineParser(N, numLines),
+				new SimpleByteWordsParser(N),
+//				new AntlrLoad(N, true),
+//				new ByteBufferLoad(N, false, numLines),
+//				new ByteBufferLoad(N, true, numLines),
+//				new ByteParser(N, true, numLines)
 		};
 
 		for (AbstractStrategy strategy : strategies) {
+			Runtime.getRuntime().gc();
+			
 			System.out.println("Loading File using "+strategy);
 
 			double min_mean = Double.MAX_VALUE;
+			String min_description = "";
 			int min_bufSize = 0;
-
-			for (int bufSize : bufSizes) {
-				final double mean = strategy.load(path, bufSize);
-				if (mean < min_mean) {
-					min_mean = mean;
-					min_bufSize = bufSize;
+			
+			if (strategy.useBuffer) {
+				for (int bufSize : bufSizes) {
+					final double mean = strategy.load(path, bufSize);
+					if (mean < min_mean) {
+						min_mean = mean;
+						min_bufSize = bufSize;
+						min_description = strategy.describeBest();
+					}
 				}
+			} else {
+				min_mean = strategy.load(path, -1);
+				min_bufSize = -1;
+				min_description = strategy.describeBest();
 			}
-			displayAvgSpeed("Best Speed for bufSize = "+min_bufSize + strategy.describeBest(), min_mean, numLines);
+
+			displayAvgSpeed("Best Speed for bufSize = "+min_bufSize + min_description, min_mean, numLines);
 		}
 	}
 
@@ -98,9 +116,11 @@ public class SpeedTest {
 	static abstract class AbstractStrategy {
 
 		final int N;
+		final boolean useBuffer;
 		
-		AbstractStrategy(final int N) {
+		AbstractStrategy(final int N, final boolean useBuffer) {
 			this.N = N;
+			this.useBuffer = useBuffer;
 		}
 		
 		abstract double load(final String path, final int bufSize) throws Exception;
@@ -110,12 +130,190 @@ public class SpeedTest {
 		}
 
 	}
+	
+	static class SimpleByteLineParser extends AbstractStrategy {
+		final int numLines;
+		
+		SimpleByteLineParser(int N, int numLines) {
+			super(N, false);
+			this.numLines = numLines;
+		}
+
+		@Override
+		double load(String path, int bufSize) throws Exception {
+			final double[] results = new double[N];
+			
+			for (int i = 0; i < N; i++) {
+				final long start_time = System.nanoTime();
+				
+				final byte[] bytes = readAllBytes(path);
+				final long total = parseBytes(bytes);
+				
+//				System.out.println("total words parsed: "+total);
+
+				results[i] = (System.nanoTime() - start_time) / 1000000000.0;
+			}
+			
+			return StdStats.mean(results);
+		}
+		
+		private byte[] readAllBytes(final String fileName) throws Exception {
+			File f = new File(fileName);
+			int size = (int)f.length();
+
+			FileInputStream fis = new FileInputStream(fileName);
+
+			byte[] data = null;
+			try {
+				data = new byte[size];
+				int n = fis.read(data);
+				if (n < data.length) {
+					data = Arrays.copyOf(data, n);
+				}
+			}
+			finally {
+				fis.close();
+			}
+			
+			return data;
+		}
+
+		private long parseBytes(final byte[] bytes) {
+			final byte _r = '\r';
+			final byte _n = '\n';
+			
+			int startIdx = 0;
+			long total = 0;
+			
+			for (int idx = 0; idx < bytes.length; idx++) {
+				final byte b = bytes[idx];
+				if (b == _r || b == _n) { // new line
+					if (startIdx < idx) {
+//						final byte[] _line = Arrays.copyOfRange(bytes, startIdx, idx);
+						final String[] _words = Utils.splitString(bytes, startIdx, idx-startIdx, (byte) SEPARATOR_CHAR);
+
+//						for (byte[] word : _words) {
+//							if (word.length > 0) total++;
+//						}
+						total += _words.length;
+					}
+					startIdx = idx+1;
+				}
+			}
+			
+			return total;
+		}
+		
+		@Override
+		public String toString() {
+			return "Simple Bytes Lines Parser";
+		}
+		
+	}
+
+	static class SimpleByteWordsParser extends AbstractStrategy {
+		
+		SimpleByteWordsParser(int N) {
+			super(N, false);
+		}
+
+		@Override
+		double load(String path, int bufSize) throws Exception {
+			final double[] results = new double[N];
+			
+			for (int i = 0; i < N; i++) {
+				final long start_time = System.nanoTime();
+				
+				final byte[] bytes = readAllBytes(path);
+				final double total = Utils.parseBytes(bytes);
+				
+//				System.out.println("total words parsed: "+total);
+
+				results[i] = (System.nanoTime() - start_time) / 1000000000.0;
+			}
+			
+			return StdStats.mean(results);
+		}
+		
+		private byte[] readAllBytes(final String fileName) throws Exception {
+			File f = new File(fileName);
+			int size = (int)f.length();
+
+			FileInputStream fis = new FileInputStream(fileName);
+
+			byte[] data = null;
+			try {
+				data = new byte[size];
+				int n = fis.read(data);
+				if (n < data.length) {
+					data = Arrays.copyOf(data, n);
+				}
+			}
+			finally {
+				fis.close();
+			}
+			
+			return data;
+		}
+		
+		@Override
+		public String toString() {
+			return "Simple Bytes Words Parser";
+		}
+		
+	}
+	
+	static class SimpleBytes extends AbstractStrategy {
+		SimpleBytes(final int N) {
+			super(N, false);
+		}
+		
+		@Override
+		public double load(String path, int bufSize) throws Exception {
+			final double[] results = new double[N];
+			
+			for (int i = 0; i < N; i++) {
+				final long start_time = System.nanoTime();
+				
+				readAllBytes(path);
+				results[i] = (System.nanoTime() - start_time) / 1000000000.0;
+			}
+			
+			return StdStats.mean(results);
+		}
+		
+		private void readAllBytes(final String fileName) throws Exception {
+			File f = new File(fileName);
+			int size = (int)f.length();
+
+			FileInputStream fis = new FileInputStream(fileName);
+
+			byte[] data = null;
+			try {
+				data = new byte[size];
+				/*int n =*/ fis.read(data);
+//				if (n < data.length) {
+//					data = Arrays.copyOf(data, n);
+//				}
+			}
+			finally {
+				fis.close();
+			}
+		}
+
+		@Override
+		public String toString() {
+			return "Simple Bytes";
+		}
+		
+		
+	}
 
 	static class AntlrLoad extends AbstractStrategy {
 		final boolean parse;
 		
 		AntlrLoad(final int N, final boolean parse) {
-			super(N);
+			super(N, false);
 			this.parse = parse;
 		}
 		
@@ -129,7 +327,7 @@ public class SpeedTest {
 //				final FileInputStream fis = new FileInputStream(path);
 //				UnbufferedCharStream input = new UnbufferedCharStream(fis, 1024*bufSize); 
 				ANTLRFileStream input = new ANTLRFileStream(path);
-/*
+
 				// create and instance of the lexer
 				SCSVLexer lexer = new SCSVLexer(input);
 
@@ -149,7 +347,7 @@ public class SpeedTest {
 					while (lexer.nextToken().getType() != Token.EOF) {
 					}
 				}
-*/				
+				
 				results[i] = (System.nanoTime() - start_time) / 1000000000.0;
 			}
 
@@ -165,7 +363,7 @@ public class SpeedTest {
 	static class BufferLoad extends AbstractStrategy {
 
 		BufferLoad(final int N) {
-			super(N);
+			super(N, false);
 		}
 		
 		@Override
@@ -176,14 +374,20 @@ public class SpeedTest {
 				final long start_time = System.nanoTime();
 
 				final InputStream is = new FileInputStream(path);
-				final BufferedReader in = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8), bufSize*1024);
+				final BufferedReader in = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8), 102400);
 
-				while (in.readLine() != null) {
+				String line;
+				int totalWords = 0;
+				while ((line = in.readLine()) != null) {
+					final String[] words = Utils.splitString(line, SEPARATOR_CHAR);
+					totalWords += words.length;
 				}
 
 				in.close();
 
 				results[i] = (System.nanoTime() - start_time) / 1000000000.0;
+				
+//				System.out.println("total Words: "+totalWords);
 			}
 			
 			return StdStats.mean(results);
@@ -201,7 +405,7 @@ public class SpeedTest {
 		final int numLines;
 
 		CharChannel(final int N, final boolean direct, final int numLines) {
-			super(N);
+			super(N, true);
 			
 			this.direct = direct;
 			this.numLines = numLines;
@@ -251,7 +455,7 @@ public class SpeedTest {
 		int min_numBytes;
 
 		ByteBufferLoad(final int N, final boolean direct, final int numLines) {
-			super(N);
+			super(N, true);
 			this.direct = direct;
 			this.numLines = numLines;
 		}
@@ -304,7 +508,7 @@ public class SpeedTest {
 				bb.flip();
 
 				for (int i = 0; i < bb.limit(); i++) {
-					bb.get();
+					final byte b = bb.get();
 				}
 
 				bb.clear();
@@ -364,11 +568,11 @@ public class SpeedTest {
 
 	static class ByteParser extends AbstractStrategy {
 		final int numLines;
+		final boolean direct;
 
-		int min_numBytes;
-
-		ByteParser(final int N, final int numLines) {
-			super(N);
+		ByteParser(final int N, final boolean direct, final int numLines) {
+			super(N, true);
+			this.direct = direct;
 			this.numLines = numLines;
 		}
 
@@ -377,10 +581,11 @@ public class SpeedTest {
 
 			final double results[] = new double[N];
 
+			// finish with numBytes = bufSize
 			for (int i = 0; i < N; i++) {
 				results[i] = internalLoad(path, bufSize);
 			}
-
+			
 			return StdStats.mean(results);
 		}
 
@@ -389,26 +594,19 @@ public class SpeedTest {
 			final long start_time = System.nanoTime();
 
 			SeekableByteChannel fc = Files.newByteChannel(Paths.get(path));
+			final int size = (int) fc.size(); // we'll be in trouble if the file is too big
 
-			final ByteBuffer bb = ByteBuffer.allocateDirect(1024*bufSize);
+			final ByteBuffer bb = direct ? ByteBuffer.allocateDirect(1024*bufSize) : ByteBuffer.allocate(1024*bufSize);
 			
-			final byte[] line = new byte[1024];
-			final byte nl = (byte)'\n';
-			int len = 0;
+			final byte[] data = new byte[size];
+			int curIdx = 0;
 			
 			while (fc.read(bb) > 0) {
 				bb.flip();
 
-				final int avail = bb.limit();
-				for (int i = 0; i < avail; i++) {
-					final byte b = bb.get();
-					if (b == nl) {
-						len = 0;
-					} else {
-						line[len++] = b;						
-					}
-				}
-
+				bb.get(data, curIdx, bb.limit());
+				curIdx += bb.limit();
+				
 				bb.clear();
 			}
 
@@ -419,7 +617,7 @@ public class SpeedTest {
 
 		@Override
 		public String toString() {
-			return "ByteBuffer Parser";
+			return "ByteBuffer Parser" + (direct ? " with direct allocation":"");
 		}
 
 	}

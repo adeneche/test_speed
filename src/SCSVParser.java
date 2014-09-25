@@ -85,7 +85,6 @@ public class SCSVParser extends Parser {
 				setState(6); row();
 				 
 				  	  _localctx.count++;
-				//  	  if (_localctx.count % 1000 == 0) System.out.println("parsed "+_localctx.count+" lines"); 
 					
 				}
 				}
