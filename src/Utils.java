@@ -14,7 +14,7 @@ public class Utils {
 	public static final long SECOND_MASK = 0xFFFFFFFF00000000L;
 
 	public static class TimeValue {
-
+		
 		public static void fromByteArray(final byte[] bytes, final int off, final TimeValue dp) {
 //			int cur = off * TimeValue.SIZE;
 //			dp.mtsIdx = Bytes.getShort(bytes, cur); cur+= 2;
@@ -77,6 +77,16 @@ public class Utils {
 
 	public static final List<MetricTags> metricTags = new ArrayList<MetricTags>();
 	public static final List<byte[]> mtsValues = new ArrayList<byte[]>();
+
+
+	public static double mean(double[] values) {
+		double sum = 0;
+		for (double value : values) {
+			sum += value;
+		}
+		
+		return sum / values.length;
+	}
 
 	private static int addMtsValue(final byte[] bytes, final int offset, final int to) {
 		final int length = to - offset;
